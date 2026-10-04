@@ -19,9 +19,3 @@ understand everyday technical problems using photos.
 - Google Gemini
 - Twilio WhatsApp
 
-## Installation
-
-Clone the project:
-
-```bash
-git clone YOUR_REPOSITORY_URL
