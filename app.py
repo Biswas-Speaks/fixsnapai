@@ -5,143 +5,464 @@ from google import genai
 from google.genai import types
 from twilio.rest import Client as TwilioClient
 
-from prompts import SUMMARY_REQUEST_PROMPT, SYSTEM_PROMPT, WELCOME_MESSAGE_TEMPLATE
+from prompts import SYSTEM_PROMPT, WELCOME_MESSAGE
 
-MODEL_NAME = "gemini-3.8-flash"
-st.set_page_config(page_title="MacroSnap", page_icon="🥗")
+
+# ============================================================
+# BASIC SETTINGS
+# ============================================================
+
+MODEL_NAME = "gemini-2.5-flash"
+
+st.set_page_config(
+    page_title="FixSnap AI",
+    page_icon="🔧",
+    layout="centered",
+)
+
+
+# ============================================================
+# API KEYS
+# ============================================================
 
 GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+
 TWILIO_ACCOUNT_SID = st.secrets["TWILIO_ACCOUNT_SID"]
 TWILIO_AUTH_TOKEN = st.secrets["TWILIO_AUTH_TOKEN"]
 TWILIO_WHATSAPP_FROM = st.secrets["TWILIO_WHATSAPP_FROM"]
 TWILIO_CONTENT_SID = st.secrets["TWILIO_CONTENT_SID"]
 
 
+# ============================================================
+# GEMINI
+# ============================================================
+
 @st.cache_resource
 def get_gemini_client():
-    return genai.Client(api_key=GEMINI_API_KEY)
+
+    return genai.Client(
+        api_key=GEMINI_API_KEY
+    )
 
 
-gemini_client = get_gemini_client()
+gemini = get_gemini_client()
 
 
-def render_message(message):
+# ============================================================
+# SESSION DATA
+# ============================================================
+
+if "onboarded" not in st.session_state:
+    st.session_state.onboarded = False
+
+if "messages" not in st.session_state:
+    st.session_state.messages = []
+
+if "last_ai_response" not in st.session_state:
+    st.session_state.last_ai_response = None
+
+
+# ============================================================
+# DISPLAY MESSAGE
+# ============================================================
+
+def show_message(message):
+
     with st.chat_message(message["role"]):
-        if message["kind"] == "text":
-            st.write(message["content"])
-        elif message["kind"] == "image":
-            st.image(message["content"])
+
+        if message["type"] == "text":
+
+            st.markdown(
+                message["content"]
+            )
+
+        elif message["type"] == "image":
+
+            st.image(
+                message["content"],
+                use_container_width=True
+            )
 
 
-def add_message(role, kind, content):
-    st.session_state.messages.append({"role": role, "kind": kind, "content": content})
-    render_message(st.session_state.messages[-1])
+# ============================================================
+# ADD MESSAGE
+# ============================================================
 
+def add_message(role, message_type, content):
+
+    message = {
+        "role": role,
+        "type": message_type,
+        "content": content
+    }
+
+    st.session_state.messages.append(
+        message
+    )
+
+    show_message(message)
+
+
+# ============================================================
+# ASK GEMINI
+# ============================================================
 
 def ask_gemini(parts):
+
     try:
-        return st.session_state.chat.send_message(parts).text
-    except Exception as error:
-        return f"Sorry, something went wrong: {error}"
 
-
-def clean_whatsapp_text(text):
-    if not text:
-        return "No nutrition summary available."
-    text = " ".join(text.split())
-    return text[:1500] + "..." if len(text) > 1500 else text
-
-
-def send_whatsapp(to_number, user_name, summary):
-    try:
-        twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-        content_variables = json.dumps(
-            {"1": user_name, "2": clean_whatsapp_text(summary)}, ensure_ascii=False
+        response = st.session_state.chat.send_message(
+            parts
         )
-        message = twilio_client.messages.create(
+
+        if response and response.text:
+
+            return response.text
+
+        return "Hmm, I couldn't figure that out."
+
+    except Exception as error:
+
+        print("Gemini Error:", error)
+
+        return (
+            "Sorry 😅 something went wrong while "
+            "I was trying to understand the problem."
+        )
+
+
+# ============================================================
+# SEND WHATSAPP
+# ============================================================
+
+def send_whatsapp(phone_number, name, answer):
+
+    try:
+
+        twilio = TwilioClient(
+            TWILIO_ACCOUNT_SID,
+            TWILIO_AUTH_TOKEN
+        )
+
+        # Keep WhatsApp message reasonably short.
+        answer = " ".join(
+            answer.split()
+        )
+
+        if len(answer) > 1500:
+
+            answer = answer[:1500] + "..."
+
+        variables = json.dumps(
+            {
+                "1": name,
+                "2": answer
+            },
+            ensure_ascii=False
+        )
+
+        message = twilio.messages.create(
+
             from_=TWILIO_WHATSAPP_FROM,
-            to=f"whatsapp:{to_number}",
+
+            to=f"whatsapp:{phone_number}",
+
             content_sid=TWILIO_CONTENT_SID,
-            content_variables=content_variables,
+
+            content_variables=variables
         )
+
         return True, message.sid
+
     except Exception as error:
-        return False, str(error)
+
+        print("WhatsApp Error:", error)
+
+        return False, None
 
 
-# Step 1: onboarding
-if not st.session_state.get("onboarded"):
-    st.title("🥗 MacroSnap")
-    st.caption("Snap it. Track it. Text yourself the results.")
-    with st.form("onboarding_form"):
-        name = st.text_input("Your name")
-        whatsapp_number = st.text_input(
-            "WhatsApp number (with country code)",
-            placeholder="+91XXXXXXXXXX",
-            help="This is the number MacroSnap will text your summary to.",
+# ============================================================
+# FIRST SCREEN
+# ============================================================
+
+if not st.session_state.onboarded:
+
+    st.title("🔧 FixSnap AI")
+
+    st.write(
+        "Snap a photo. Show me the problem. "
+        "I'll try to help you fix it."
+    )
+
+    st.divider()
+
+    with st.form("user_form"):
+
+        name = st.text_input(
+            "What's your name?",
+            placeholder="Example: Biswas"
         )
-        submitted = st.form_submit_button("Let's go 🚀")
-    if submitted:
-        if not name.strip() or not whatsapp_number.strip():
-            st.warning("Please fill in both your name and WhatsApp number.")
-        else:
-            st.session_state.name = name.strip()
-            st.session_state.whatsapp_number = whatsapp_number.strip()
-            st.session_state.chat = gemini_client.chats.create(
-                model=MODEL_NAME,
-                config=types.GenerateContentConfig(system_instruction=SYSTEM_PROMPT),
+
+        phone = st.text_input(
+            "WhatsApp Number",
+            placeholder="+91XXXXXXXXXX"
+        )
+
+        start = st.form_submit_button(
+            "Let's Start 🚀",
+            use_container_width=True
+        )
+
+    if start:
+
+        if not name.strip():
+
+            st.warning(
+                "Please enter your name."
             )
-            st.session_state.messages = []
+
+        elif not phone.strip():
+
+            st.warning(
+                "Please enter your WhatsApp number."
+            )
+
+        else:
+
+            st.session_state.name = (
+                name.strip()
+            )
+
+            st.session_state.phone = (
+                phone.strip()
+            )
+
+            # Start Gemini chat
+            st.session_state.chat = (
+                gemini.chats.create(
+
+                    model=MODEL_NAME,
+
+                    config=types.GenerateContentConfig(
+
+                        system_instruction=SYSTEM_PROMPT
+                    )
+                )
+            )
+
             st.session_state.onboarded = True
+
             st.rerun()
+
     st.stop()
 
-# Step 2: chat interface
-header_col, button_col = st.columns([5, 2], vertical_alignment="center")
 
-with header_col:
-    st.title("🥗 MacroSnap")
+# ============================================================
+# MAIN HEADER
+# ============================================================
 
-with button_col:
-    send_disabled = len(st.session_state.messages) <= 2
-    if st.button("📤 Send to WhatsApp", disabled=send_disabled, use_container_width=True):
-        with st.spinner("Summarizing your day..."):
-            summary = ask_gemini([SUMMARY_REQUEST_PROMPT])
-        success, info = send_whatsapp(st.session_state.whatsapp_number, st.session_state.name, summary)
-        if success:
-            st.success("Sent! Check your WhatsApp 📲")
-        else:
-            st.error(f"Couldn't send that: {info}")
-
-st.caption(f"Logged in as {st.session_state.name} - updates go to {st.session_state.whatsapp_number}")
-
-if not st.session_state.messages:
-    add_message("assistant", "text", WELCOME_MESSAGE_TEMPLATE.format(name=st.session_state.name))
-else:
-    for message in st.session_state.messages:
-        render_message(message)
-
-user_input = st.chat_input(
-    "Ask a question, or attach a photo of your meal",
-    accept_file=True,
-    file_type=["jpg", "jpeg", "png"],
+col1, col2 = st.columns(
+    [3, 2]
 )
 
-if user_input:
-    photo = user_input.files[0] if user_input.files else None
-    text = user_input.text
+with col1:
+
+    st.title("🔧 FixSnap AI")
+
+with col2:
+
+    if st.session_state.last_ai_response:
+
+        if st.button(
+            "📱 Send to WhatsApp",
+            use_container_width=True
+        ):
+
+            with st.spinner(
+                "Sending..."
+            ):
+
+                success, sid = send_whatsapp(
+
+                    st.session_state.phone,
+
+                    st.session_state.name,
+
+                    st.session_state.last_ai_response
+                )
+
+            if success:
+
+                st.success(
+                    "Sent to WhatsApp 📲"
+                )
+
+            else:
+
+                st.error(
+                    "Couldn't send the message."
+                )
+
+
+st.caption(
+    f"Hi {st.session_state.name} 👋"
+)
+
+
+# ============================================================
+# SHOW OLD CHAT
+# ============================================================
+
+if not st.session_state.messages:
+
+    add_message(
+        "assistant",
+        "text",
+        WELCOME_MESSAGE.format(
+            name=st.session_state.name
+        )
+    )
+
+else:
+
+    for message in st.session_state.messages:
+
+        show_message(message)
+
+
+# ============================================================
+# CHAT INPUT
+# ============================================================
+
+user_message = st.chat_input(
+    "Tell me what's wrong...",
+    accept_file=True,
+    file_type=[
+        "jpg",
+        "jpeg",
+        "png",
+        "webp"
+    ]
+)
+
+
+# ============================================================
+# USER MESSAGE
+# ============================================================
+
+if user_message:
+
+    text = user_message.text
+
+    photo = None
+
+    if user_message.files:
+
+        photo = user_message.files[0]
+
+
+    # --------------------------------------------------------
+    # SEND IMAGE TO CHAT
+    # --------------------------------------------------------
+
+    if photo:
+
+        image_bytes = photo.getvalue()
+
+        add_message(
+            "user",
+            "image",
+            image_bytes
+        )
+
+
+    # --------------------------------------------------------
+    # SEND TEXT TO CHAT
+    # --------------------------------------------------------
+
+    if text:
+
+        add_message(
+            "user",
+            "text",
+            text
+        )
+
+
+    # --------------------------------------------------------
+    # PREPARE GEMINI REQUEST
+    # --------------------------------------------------------
+
     parts = []
 
-    if photo is not None:
-        photo_bytes = photo.getvalue()
-        add_message("user", "image", photo_bytes)
-        parts.append(types.Part.from_bytes(data=photo_bytes, mime_type=photo.type))
-    if text:
-        add_message("user", "text", text)
-        parts.append(text)
-    elif photo is not None:
-        parts.append("What is this meal? Give me the calories and macros.")
 
-    with st.spinner("Crunching the numbers..."):
-        answer = ask_gemini(parts)
-    add_message("assistant", "text", answer)
+    if photo:
+
+        image_bytes = photo.getvalue()
+
+        parts.append(
+
+            types.Part.from_bytes(
+
+                data=image_bytes,
+
+                mime_type=photo.type
+            )
+        )
+
+
+    if text:
+
+        parts.append(text)
+
+
+    elif photo:
+
+        parts.append(
+            """
+Look at this photo and try to understand
+what might be wrong.
+
+Explain it to me in simple language.
+
+Tell me:
+
+- What you notice
+- What you think might be wrong
+- What I can try
+- If I should send another photo
+
+Please don't sound like a professional
+technical report. Talk normally, like a
+helpful person.
+"""
+        )
+
+
+    # --------------------------------------------------------
+    # ASK AI
+    # --------------------------------------------------------
+
+    if parts:
+
+        with st.spinner(
+            "Hmm... let me have a look 👀"
+        ):
+
+            answer = ask_gemini(
+                parts
+            )
+
+
+        # Show answer
+        add_message(
+            "assistant",
+            "text",
+            answer
+        )
+
+
+        # Save answer
+        st.session_state.last_ai_response = answer
+
+        st.rerun()
